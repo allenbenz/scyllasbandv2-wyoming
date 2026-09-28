@@ -1,0 +1,128 @@
+# scyllasbandv2-wyoming
+
+A [Wyoming](https://github.com/rhasspy/wyoming)-protocol text-to-speech server for **Scylla's Band v2**, a duration-flow TTS model: a phone-duration predictor feeds a rectified-flow latent generator, followed by a Vocos vocoder. Audio is emitted as 16-bit PCM at 24 kHz mono. The model ships 10 voices across 6 languages (`en_us`, `en_gb`, `es`, `it`, `fr`, `de`, `vi`; advertised to clients as `en-US`, `en-GB`, `es`, `it`, `fr`, `de`, `vi`) and supports *measured delivery* style controls — `energy`, `tension`, `valence`, `assertiveness` on a 0–4 scale (2 = neutral) plus a `whisper` on/off toggle.
+
+Inference runs on CPU or NVIDIA GPU via **onnxruntime** with the CUDA Execution Provider. Note: inference is ONNX only — the PyTorch checkpoints in the model repository are upstream training artifacts and are not used by this server.
+
+## How it works
+
+- Answers Wyoming `describe` and `ping` requests so Home Assistant can discover the server and its voices.
+- Handles both one-shot `synthesize` and streaming `synthesize-start` / `synthesize-chunk` / `synthesize-stop` requests.
+- Emits `audio-start`, `audio-chunk`, and `audio-stop` events carrying 16-bit PCM at 24 kHz mono.
+- Serializes synthesis across connections: one request is processed at a time on the model.
+
+## Requirements
+
+- Python 3.11+ (3.14 recommended)
+- ~1 GB disk space for the downloaded model bundle
+- Optional: NVIDIA GPU with drivers (CUDA 13.0 + cuDNN 9 for `onnxruntime-gpu` ≥ 1.30, i.e. driver ≥ 580)
+
+## Quickstart (local)
+
+Requires [mise](https://mise.jdx.dev/) (which provides Python 3.14 and uv):
+
+```sh
+mise run install                      # or: mise exec -- uv sync
+mise exec -- uv run scyllasbandv2-wyoming
+```
+
+The first run downloads the model bundle from Hugging Face (`spybyscript/scyllasbandv2`, pinned to revision `v2-measured-20260922`, ~498 MB for the FP32 `onnx` bundle or ~316 MB for `onnx-int8`) into the model directory. The server then listens on `tcp://0.0.0.0:10200`.
+
+## Docker
+
+```sh
+docker run -p 10200:10200 -v scyllasbandv2-models:/data ghcr.io/allenbenz/scyllasbandv2-wyoming:latest
+```
+
+GPU variant (requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)):
+
+```sh
+docker run --gpus all -p 10200:10200 -v scyllasbandv2-models:/data ghcr.io/allenbenz/scyllasbandv2-wyoming:latest
+```
+
+The image is **linux/amd64 only** — `onnxruntime-gpu` publishes no arm64 wheels.
+
+## Home Assistant
+
+1. Go to **Settings → Devices & Services → Add Integration → Wyoming Protocol**.
+2. Enter the server's host and port `10200`.
+3. Voices appear under the TTS entity dropdown.
+
+Voice and language are chosen **per request** from Home Assistant — they are not environment variables. The `SCYLLASBAND_VOICE` / `SCYLLASBAND_LANGUAGE` settings below are only server-side defaults used when a request omits them.
+
+## Configuration
+
+Every setting is available as an environment variable and as a CLI flag of the same meaning (`--uri`, `--model-dir`, `--bundle`, `--download`, `--revision`, `--device`, `--intra-op-threads`, `--inter-op-threads`, `--voice`, `--language`, `--sampler`, `--steps`, `--seed`, `--speed`, `--energy-gain`, `--delivery`, `--output-chunk-ms`, `--no-warmup`, `--log-level`). CLI flags override environment variables.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SCYLLASBAND_URI` | `tcp://0.0.0.0:10200` | Wyoming listen URI (`tcp://`, `unix://`, or `stdio://`) |
+| `SCYLLASBAND_MODEL_DIR` | `data/models` (`/data/models` in docker) | Where model bundles are downloaded and looked up |
+| `SCYLLASBAND_BUNDLE` | `onnx` | Bundle variant: `onnx` (~498 MB, FP32) or `onnx-int8` (~316 MB) |
+| `SCYLLASBAND_DOWNLOAD` | `auto` | `auto` downloads when missing, `always` re-downloads at startup, `never` fails if the bundle is missing |
+| `SCYLLASBAND_REVISION` | *(empty = runtime default `v2-measured-20260922`)* | Hugging Face revision to pin |
+| `HF_TOKEN` | *(empty)* | Passed through to `huggingface_hub` for gated or rate-limited downloads |
+| `SCYLLASBAND_DEVICE` | `auto` | `auto` prefers CUDA and falls back to CPU; `cuda` fails fast if the CUDA EP is unavailable; `cpu` forces CPU |
+| `SCYLLASBAND_INTRA_OP_THREADS` | `0` (onnxruntime default) | onnxruntime intra-op threads |
+| `SCYLLASBAND_INTER_OP_THREADS` | `0` (onnxruntime default) | onnxruntime inter-op threads |
+| `SCYLLASBAND_VOICE` | *(empty = first bundle voice)* | Default voice id for requests that don't specify one (e.g. `ariadne`) |
+| `SCYLLASBAND_LANGUAGE` | *(empty = voice default)* | Default language for requests without one |
+| `SCYLLASBAND_SAMPLER` | `heun` | Rectified-flow sampler: `euler` or `heun` |
+| `SCYLLASBAND_STEPS` | `8` | Rectified-flow steps (quality/latency tradeoff, 1–64) |
+| `SCYLLASBAND_SEED` | *(empty = random per request)* | Deterministic seeding |
+| `SCYLLASBAND_SPEED` | `1.0` | Speaking-rate scale from the model |
+| `SCYLLASBAND_ENERGY_GAIN` | `1.0` | Post-synthesis waveform gain (linear; the delivery `energy` axis is separate and learned) |
+| `SCYLLASBAND_DELIVERY` | *(empty = neutral)* | Default measured-delivery string, e.g. `"energy=2.3,tension=1.7,valence=2.6,whisper=off"`; axes `energy`/`tension`/`valence`/`assertiveness` are 0–4 (2 = neutral), `whisper` is `on`/`off` |
+| `SCYLLASBAND_OUTPUT_CHUNK_MS` | `200` | Max milliseconds of audio per `audio-chunk` event |
+| `SCYLLASBAND_WARMUP` | `true` | Run a warmup synthesis at startup so the first request is fast |
+| `SCYLLASBAND_LOG_LEVEL` | `INFO` | Log level |
+
+The input **text**, **voice name**, and **language** always arrive per request via the Wyoming protocol from Home Assistant — they are intentionally *not* environment variables.
+
+## Development
+
+Useful mise tasks:
+
+| Task | What it does |
+| --- | --- |
+| `mise run install` | `uv sync` — install dependencies |
+| `mise run lock` | Regenerate `uv.lock` (commit the result) |
+| `mise run test` | `uv run pytest -m "not e2e and not docker"` — unit + integration |
+| `mise run test-unit` | Unit tests only (`tests/unit`) |
+| `mise run test-integration` | Integration tests only (`tests/integration`) |
+| `mise run test-e2e` | E2E tests (see below) |
+| `mise run test-docker` | Docker image tests (see below) |
+| `mise run lint` | `ruff check` + format check |
+| `mise run format` | Format and autofix |
+| `mise run typecheck` | `mypy src` |
+| `mise run run` | Start the server |
+
+Test markers:
+
+- Default suite skips heavy tests: `pytest -m "not e2e and not docker"`.
+- `SCYLLASBAND_E2E=1 mise run test-e2e` runs e2e tests against the **real model** — it downloads ~500 MB from Hugging Face (or reuses a bundle you point `SCYLLASBAND_MODEL_DIR` at; the layout is `<model-dir>/v2/onnx`).
+- `SCYLLASBAND_DOCKER_E2E=1 mise run test-docker` builds and runs the Docker container end-to-end.
+
+### CUDA on Windows
+
+`onnxruntime-gpu` needs the CUDA/cuDNN DLLs at runtime. The Docker image gets them from its `nvidia/cuda` base image; on a Windows dev box install them from pip instead — the server registers the DLL directories automatically at startup:
+
+```sh
+uv sync --group cuda-windows
+```
+
+With the libraries missing, `SCYLLASBAND_DEVICE=auto` (the default) logs a warning and falls back to CPU; `SCYLLASBAND_DEVICE=cuda` fails fast with a clear error.
+
+`uv.lock` must be committed; regenerate it with `mise run lock` when dependencies change.
+
+## Troubleshooting
+
+- **GPU not used** — check the startup logs with `SCYLLASBAND_DEVICE=auto`; verify NVIDIA drivers are installed and that CUDA 13 + cuDNN 9 are available for `onnxruntime-gpu` ≥ 1.30 (driver ≥ 580).
+- **First start is slow** — the model bundle is downloaded (~316–498 MB) and a warmup synthesis runs at startup. Both happen only once per model directory.
+- **Home Assistant shows no voices** — enable debug logging and confirm the server answers the Wyoming `describe` request with the expected voice list.
+
+## License
+
+- This project: [Apache-2.0](LICENSE).
+- Model weights: Apache-2.0, at [huggingface.co/spybyscript/scyllasbandv2](https://huggingface.co/spybyscript/scyllasbandv2).
+- The [Wyoming](https://github.com/rhasspy/wyoming) library is MIT/Apache dual-licensed.

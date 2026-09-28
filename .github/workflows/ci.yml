@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly model e2e: Monday 05:00 UTC
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - run: uv run mypy src
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - name: Run unit and integration tests
+        run: uv run pytest -m "not e2e and not docker" -v
+
+  e2e:
+    # Real model on CPU; downloads ~500 MB (cached between runs).
+    # Manual + weekly only (disabled on ordinary pushes/PRs to save runner time).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && github.repository_owner == 'allenbenz')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+      - uses: actions/cache@v4
+        with:
+          path: data/models
+          key: scyllasbandv2-models-${{ runner.os }}
+      - name: Run e2e tests
+        env:
+          SCYLLASBAND_E2E: "1"
+          SCYLLASBAND_DEVICE: cpu
+        run: uv run pytest -m e2e -v

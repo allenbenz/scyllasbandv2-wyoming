@@ -1,0 +1,89 @@
+[project]
+name = "scyllasbandv2-wyoming"
+version = "0.1.0"
+description = "Wyoming-protocol TTS server for the Scylla's Band v2 model (onnxruntime with optional CUDA)"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "scyllasbandv2-wyoming contributors" }]
+requires-python = ">=3.11"
+keywords = ["wyoming", "tts", "text-to-speech", "home-assistant", "scyllasband"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "wyoming>=1.10,<2",
+    "numpy>=1.26",
+    "huggingface-hub>=0.30",
+    "scyllasband @ git+https://github.com/lowkeytea/scyllasband@dev",
+    # onnxruntime-gpu >= 1.30 is built against CUDA 13 (stable sonames) + cuDNN 9;
+    # it also sets this project's Python floor (wheels are cp311+).
+    "onnxruntime-gpu>=1.30,<2 ; sys_platform == 'linux' and platform_machine == 'x86_64' or sys_platform == 'linux' and platform_machine == 'AMD64' or sys_platform == 'win32' and platform_machine == 'x86_64' or sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "onnxruntime>=1.30,<2 ; sys_platform != 'linux' and sys_platform != 'win32' or platform_machine != 'x86_64' and platform_machine != 'AMD64'",
+]
+
+[project.scripts]
+scyllasbandv2-wyoming = "scyllasbandv2_wyoming.__main__:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# the scyllasband runtime is consumed as a direct git reference
+allow-direct-references = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+# CUDA userland for Windows dev boxes (the Docker image gets it from its
+# nvidia/cuda base): uv sync --group cuda-windows
+# CUDA 13 pip packages dropped the -cuXX suffix (stable sonames); cuDNN keeps it.
+cuda-windows = [
+    "nvidia-cudnn-cu13>=9",
+    "nvidia-cublas>=13",
+    "nvidia-cuda-runtime>=13",
+    "nvidia-cuda-nvrtc>=13",
+    "nvidia-cufft>=12",
+    "nvidia-curand>=10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scyllasbandv2_wyoming"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "e2e: end-to-end tests that download and run the real model (enable with SCYLLASBAND_E2E=1)",
+    "docker: tests that build and run the docker image (enable with SCYLLASBAND_DOCKER_E2E=1)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "RUF"]
+
+[tool.mypy]
+files = ["src"]
+# match the dev/docker toolchain (3.14); numpy's stubs need >= 3.12 anyway
+python_version = "3.14"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["wyoming.*", "scyllasband.*", "onnxruntime", "onnxruntime.*", "huggingface_hub.*"]
+ignore_missing_imports = true
