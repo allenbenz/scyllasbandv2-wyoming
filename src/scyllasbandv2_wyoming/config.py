@@ -17,6 +17,7 @@ from typing import Any
 
 ENV_PREFIX = "SCYLLASBAND_"
 
+VALID_MODEL_VERSIONS = ("v1", "v2")
 VALID_BUNDLES = ("onnx", "onnx-int8")
 VALID_DOWNLOAD_MODES = ("auto", "always", "never")
 VALID_DEVICES = ("auto", "cuda", "cpu")
@@ -34,6 +35,7 @@ class Settings:
 
     uri: str = "tcp://0.0.0.0:10200"
     model_dir: Path = Path("data/models")
+    model_version: str = "v2"
     bundle: str = "onnx"
     download: str = "auto"
     revision: str | None = None
@@ -46,9 +48,11 @@ class Settings:
     steps: int = 8
     seed: int | None = None
     speed: float = 1.0
-    max_chunk_seconds: float = 12.0
+    max_chunk_seconds: float = 8.0
     energy_gain: float = 1.0
     delivery: str | None = None
+    v1_emotion: str | None = None
+    v1_emotion_scale: float = 1.0
     output_chunk_ms: int = 200
     warmup: bool = True
     log_level: str = "INFO"
@@ -56,6 +60,10 @@ class Settings:
     def __post_init__(self) -> None:
         if not self.uri.strip():
             raise ValueError("uri must not be empty")
+        if self.model_version not in VALID_MODEL_VERSIONS:
+            raise ValueError(
+                f"model_version must be one of {VALID_MODEL_VERSIONS}, got {self.model_version!r}"
+            )
         if self.bundle not in VALID_BUNDLES:
             raise ValueError(f"bundle must be one of {VALID_BUNDLES}, got {self.bundle!r}")
         if self.download not in VALID_DOWNLOAD_MODES:
@@ -87,6 +95,16 @@ class Settings:
             raise ValueError(f"inter_op_threads must be >= 0, got {self.inter_op_threads}")
         if self.log_level not in VALID_LOG_LEVELS:
             raise ValueError(f"log_level must be one of {VALID_LOG_LEVELS}, got {self.log_level!r}")
+        if self.delivery is not None and self.model_version != "v2":
+            raise ValueError("delivery requires model_version=v2 (v1 uses v1_emotion)")
+        if self.v1_emotion is not None and self.model_version != "v1":
+            raise ValueError("v1_emotion requires model_version=v1")
+        if self.v1_emotion_scale != 1.0 and self.model_version != "v1":
+            raise ValueError("v1_emotion_scale requires model_version=v1")
+        if self.v1_emotion_scale < 0:
+            raise ValueError(
+                f"v1_emotion_scale must be >= 0 (1=direct, 0=null), got {self.v1_emotion_scale}"
+            )
 
 
 def _raw(env: Mapping[str, str], name: str) -> str | None:
@@ -138,6 +156,8 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> Settings:
         kwargs["uri"] = text
     if text := _raw(source, "MODEL_DIR"):
         kwargs["model_dir"] = Path(text)
+    if text := _raw(source, "MODEL_VERSION"):
+        kwargs["model_version"] = text.lower()
     if text := _raw(source, "BUNDLE"):
         kwargs["bundle"] = text.lower()
     if text := _raw(source, "DOWNLOAD"):
@@ -163,6 +183,9 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> Settings:
     if (factor := _env_float(source, "ENERGY_GAIN")) is not None:
         kwargs["energy_gain"] = factor
     kwargs["delivery"] = _raw(source, "DELIVERY")
+    kwargs["v1_emotion"] = _raw(source, "V1_EMOTION")
+    if (factor := _env_float(source, "V1_EMOTION_SCALE")) is not None:
+        kwargs["v1_emotion_scale"] = factor
     if (count := _env_int(source, "OUTPUT_CHUNK_MS")) is not None:
         kwargs["output_chunk_ms"] = count
     if (flag := _env_bool(source, "WARMUP")) is not None:
@@ -192,6 +215,13 @@ def build_arg_parser(env: Mapping[str, str] | None = None) -> argparse.ArgumentP
         default=base.model_dir,
         metavar="DIR",
         help="directory holding (or receiving) the downloaded bundles (env SCYLLASBAND_MODEL_DIR)",
+    )
+    parser.add_argument(
+        "--model-version",
+        choices=VALID_MODEL_VERSIONS,
+        default=base.model_version,
+        help="model generation to serve: v2 (measured delivery) or v1 (emotion "
+        "presets + prefix-latent carryover) (env SCYLLASBAND_MODEL_VERSION)",
     )
     parser.add_argument(
         "--bundle",
@@ -299,7 +329,29 @@ def build_arg_parser(env: Mapping[str, str] | None = None) -> argparse.ArgumentP
         metavar="SPEC",
         help=(
             'default measured-delivery string, e.g. "energy=2.3,whisper=off" '
-            "(env SCYLLASBAND_DELIVERY)"
+            "(env SCYLLASBAND_DELIVERY; requires model_version=v2)"
+        ),
+    )
+    parser.add_argument(
+        "--v1-emotion",
+        dest="v1_emotion",
+        default=base.v1_emotion,
+        metavar="SPEC",
+        help=(
+            'v1-only emotion spec: axes "joy=0.75,sarcasm=0.25" '
+            "(calm/joy/anger/sadness/sarcasm/questioning, 0-1) or a named preset "
+            "(env SCYLLASBAND_V1_EMOTION; requires model_version=v1)"
+        ),
+    )
+    parser.add_argument(
+        "--v1-emotion-scale",
+        dest="v1_emotion_scale",
+        type=float,
+        default=base.v1_emotion_scale,
+        metavar="X",
+        help=(
+            "v1-only emotion CFG strength, 1=direct 0=null "
+            "(env SCYLLASBAND_V1_EMOTION_SCALE; requires model_version=v1)"
         ),
     )
     parser.add_argument(

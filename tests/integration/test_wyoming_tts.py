@@ -241,6 +241,35 @@ async def test_settings_passthrough_to_runtime(fake_runtime: FakeRuntime, tmp_pa
     assert request["delivery"] == "whisper=on"
 
 
+async def test_v1_emotion_passthrough_to_runtime(fake_runtime: FakeRuntime, tmp_path) -> None:
+    """v1 mode routes emotion/scale to the runtime and never sends delivery."""
+    settings = Settings(
+        model_dir=tmp_path,
+        model_version="v1",
+        v1_emotion="joy=0.6",
+        v1_emotion_scale=1.25,
+        output_chunk_ms=100,
+    )
+    service = SynthesisService(
+        fake_runtime,
+        settings,
+        providers=["CPUExecutionProvider"],
+        bundle_dir=tmp_path / "v1" / "onnx",
+    )
+    server, port = await start_test_server(service, settings)
+    client = await connect(port)
+    try:
+        await client.write_event(Synthesize(text="Hello again.").event())
+        await read_until(client, "audio-stop")
+    finally:
+        await client.disconnect()
+        await server.stop()
+    request = fake_runtime.requests[-1]
+    assert request["affect"] == "joy=0.6"
+    assert request["affect_guidance_scale"] == 1.25
+    assert request.get("delivery") is None
+
+
 async def test_energy_gain_scales_output(fake_runtime: FakeRuntime, tmp_path) -> None:
     settings = Settings(model_dir=tmp_path, energy_gain=0.5, output_chunk_ms=100)
     service = SynthesisService(

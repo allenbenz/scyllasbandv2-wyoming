@@ -3,11 +3,17 @@ plus the wyoming Info message construction (no server, fake runtime)."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from scyllasbandv2_wyoming.config import Settings
-from scyllasbandv2_wyoming.runtime import SynthesisService, VoiceResolutionError
+from scyllasbandv2_wyoming.runtime import (
+    SynthesisService,
+    VoiceResolutionError,
+    bundle_path,
+)
 from scyllasbandv2_wyoming.server import PROGRAM_NAME, build_info
 
 from ..fakes import FAKE_SAMPLE_RATE, FakeRuntime, fake_audio_piece, make_voice_spec
@@ -109,6 +115,43 @@ def test_resolve_language_primary_subtag_fallback(fake_runtime) -> None:
     assert service.resolve_language(voice, "de-DE") == "de"
 
 
+def test_bundle_path_is_version_aware(tmp_path) -> None:
+    v1 = bundle_path(Settings(model_dir=tmp_path, model_version="v1"))
+    v2 = bundle_path(Settings(model_dir=tmp_path, model_version="v2"))
+    assert v1 == (tmp_path / "v1" / "onnx").resolve()
+    assert v2 == (tmp_path / "v2" / "onnx").resolve()
+
+
+async def test_stream_v1_passes_emotion_not_delivery(fake_runtime) -> None:
+    settings = Settings(
+        model_dir=Path("."),
+        model_version="v1",
+        v1_emotion="joy=0.7,sarcasm=0.3",
+        v1_emotion_scale=1.5,
+    )
+    service = SynthesisService(
+        fake_runtime, settings, providers=["CPUExecutionProvider"], bundle_dir="."
+    )
+    async for _ in service.stream(text="Hi", voice_id="ariadne", language="en_us"):
+        pass
+    request = fake_runtime.requests[-1]
+    assert request["affect"] == "joy=0.7,sarcasm=0.3"
+    assert request["affect_guidance_scale"] == 1.5
+    assert "delivery" not in request or request.get("delivery") is None
+
+
+async def test_stream_v2_passes_delivery_not_emotion(fake_runtime) -> None:
+    settings = Settings(model_dir=Path("."), model_version="v2", delivery="energy=2.5")
+    service = SynthesisService(
+        fake_runtime, settings, providers=["CPUExecutionProvider"], bundle_dir="."
+    )
+    async for _ in service.stream(text="Hi", voice_id="ariadne", language="en_us"):
+        pass
+    request = fake_runtime.requests[-1]
+    assert request["delivery"] == "energy=2.5"
+    assert "affect" not in request and "affect_guidance_scale" not in request
+
+
 async def test_stream_yields_audio_pieces(fake_service: SynthesisService) -> None:
     pieces = [
         piece
@@ -148,7 +191,7 @@ async def test_stream_passes_default_max_chunk_seconds(fake_runtime) -> None:
     )
     async for _ in service.stream(text="Hi", voice_id="ariadne", language="en_us"):
         pass
-    assert fake_runtime.requests[-1]["max_chunk_seconds"] == 12.0
+    assert fake_runtime.requests[-1]["max_chunk_seconds"] == 8.0
 
 
 def test_build_info(fake_service: SynthesisService) -> None:

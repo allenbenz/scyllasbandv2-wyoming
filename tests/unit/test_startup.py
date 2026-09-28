@@ -15,7 +15,7 @@ from ..fakes import FakeRuntime
 
 
 def make_bundle(root: Path, settings: Settings) -> Path:
-    bundle_dir = root / "v2" / settings.bundle
+    bundle_dir = root / settings.model_version / settings.bundle
     bundle_dir.mkdir(parents=True, exist_ok=True)
     (bundle_dir / "manifest.json").write_text("{}", encoding="utf-8")
     return bundle_dir
@@ -82,6 +82,15 @@ async def test_always_forces_download(harness: Harness, tmp_path: Path) -> None:
     make_bundle(tmp_path, settings)  # bundle already present
     await SynthesisService.create(settings)
     assert harness.downloads == [{"force": True}]
+
+
+async def test_v1_auto_skips_download_when_bundle_present(harness: Harness, tmp_path: Path) -> None:
+    settings = Settings(model_dir=tmp_path, model_version="v1", device="cpu", warmup=False)
+    make_bundle(tmp_path, settings)
+    service = await SynthesisService.create(settings)
+    assert harness.downloads == []
+    assert harness.loads[0] == (tmp_path / "v1" / "onnx").resolve()
+    assert service.voices()
 
 
 async def test_auto_self_heals_corrupt_bundle(harness: Harness, tmp_path: Path) -> None:

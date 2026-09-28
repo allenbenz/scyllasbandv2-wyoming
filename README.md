@@ -42,6 +42,29 @@ docker run --gpus all -p 10200:10200 -v scyllasbandv2-models:/data ghcr.io/allen
 
 The image is **linux/amd64 only** — `onnxruntime-gpu` publishes no arm64 wheels.
 
+## Model versions
+
+The server can serve either generation of Scylla's Band; bundles live side by side under `<model-dir>/v1/` and `<model-dir>/v2/`, so you can run one container per version if you want both.
+
+| | `v2` (default) | `v1` |
+| --- | --- | --- |
+| Style conditioning | Measured delivery axes: `energy`, `tension`, `valence`, `assertiveness` (0–4) + `whisper` (`SCYLLASBAND_DELIVERY`) | Continuous affect axes `calm, joy, anger, sadness, sarcasm, questioning` (0–1) or named presets (`SCYLLASBAND_V1_EMOTION`) + CFG scale (`SCYLLASBAND_V1_EMOTION_SCALE`) |
+| Cross-chunk continuity | No prefix carryover (the released v2 graphs do not accept prefix latents) | **Prefix-latent carryover enabled** — chunk N is conditioned on the last ~24 latent frames of chunk N−1, keeping pitch/register steadier across chunk seams |
+| Languages | `en-US`, `en-GB`, `es`, `it`, `fr`, `de`, `vi` | `en-US`, `en-GB`, `es`, `it` |
+| Largest chunk (latent bucket) | 1024 frames ≈ 21.3 s | 512 frames ≈ 10.9 s (`SCYLLASBAND_MAX_CHUNK_SECONDS` above this is preflight-split, with a startup warning) |
+| Training | Newer "measured delivery" training run | Legacy run |
+
+Voice names (ariadne, felix, gwen, …) and the audio contract (24 kHz mono) are identical across versions.
+
+```sh
+# v1 with continuous affect axes and stronger CFG
+docker run --gpus all -p 10200:10200 -v scyllasbandv2-models:/data \
+  -e SCYLLASBAND_MODEL_VERSION=v1 -e SCYLLASBAND_V1_EMOTION="joy=0.75,sarcasm=0.25" \
+  ghcr.io/allenbenz/scyllasbandv2-wyoming:latest
+```
+
+The v1 emotion spec is validated at startup (a discarded one-step probe render) — an invalid axis name or out-of-range value fails fast with the valid options listed.
+
 ## Home Assistant
 
 1. Go to **Settings → Devices & Services → Add Integration → Wyoming Protocol**.
@@ -52,12 +75,13 @@ Voice and language are chosen **per request** from Home Assistant — they are n
 
 ## Configuration
 
-Every setting is available as an environment variable and as a CLI flag of the same meaning (`--uri`, `--model-dir`, `--bundle`, `--download`, `--revision`, `--device`, `--intra-op-threads`, `--inter-op-threads`, `--voice`, `--language`, `--sampler`, `--steps`, `--seed`, `--speed`, `--max-chunk-seconds`, `--energy-gain`, `--delivery`, `--output-chunk-ms`, `--no-warmup`, `--log-level`). CLI flags override environment variables.
+Every setting is available as an environment variable and as a CLI flag of the same meaning (`--uri`, `--model-dir`, `--model-version`, `--bundle`, `--download`, `--revision`, `--device`, `--intra-op-threads`, `--inter-op-threads`, `--voice`, `--language`, `--sampler`, `--steps`, `--seed`, `--speed`, `--max-chunk-seconds`, `--energy-gain`, `--delivery`, `--v1-emotion`, `--v1-emotion-scale`, `--output-chunk-ms`, `--no-warmup`, `--log-level`). CLI flags override environment variables.
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `SCYLLASBAND_URI` | `tcp://0.0.0.0:10200` | Wyoming listen URI (`tcp://`, `unix://`, or `stdio://`) |
 | `SCYLLASBAND_MODEL_DIR` | `data/models` (`/data/models` in docker) | Where model bundles are downloaded and looked up |
+| `SCYLLASBAND_MODEL_VERSION` | `v2` | Model generation to serve: `v2` (measured delivery) or `v1` (emotion presets + prefix-latent carryover). See [Model versions](#model-versions) |
 | `SCYLLASBAND_BUNDLE` | `onnx` | Bundle variant: `onnx` (~498 MB, FP32) or `onnx-int8` (~316 MB) |
 | `SCYLLASBAND_DOWNLOAD` | `auto` | `auto` downloads when missing, `always` re-downloads at startup, `never` fails if the bundle is missing |
 | `SCYLLASBAND_REVISION` | *(empty = runtime default `v2-measured-20260922`)* | Hugging Face revision to pin |
@@ -71,9 +95,11 @@ Every setting is available as an environment variable and as a CLI flag of the s
 | `SCYLLASBAND_STEPS` | `8` | Rectified-flow steps (quality/latency tradeoff, 1–64) |
 | `SCYLLASBAND_SEED` | *(empty = random per request)* | Deterministic seeding |
 | `SCYLLASBAND_SPEED` | `1.0` | Speaking-rate scale from the model |
-| `SCYLLASBAND_MAX_CHUNK_SECONDS` | `12` | Max predicted seconds of audio per planner chunk. Fewer/longer chunks = fewer seams = steadier intonation across sentences, at the cost of first-audio latency; `0` disables the seconds cap (the character limit still applies). The model's graph ceiling is ~21 s; overlong chunks are split automatically. |
+| `SCYLLASBAND_MAX_CHUNK_SECONDS` | `8` | Max predicted seconds of audio per planner chunk (the upstream default). Fewer/longer chunks = fewer seams = steadier intonation across sentences, at the cost of first-audio latency; `0` disables the seconds cap (the character limit still applies). The v2 graph ceiling is ~21 s, v1 ~10.9 s; overlong chunks are split automatically. |
 | `SCYLLASBAND_ENERGY_GAIN` | `1.0` | Post-synthesis waveform gain (linear; the delivery `energy` axis is separate and learned) |
-| `SCYLLASBAND_DELIVERY` | *(empty = neutral)* | Default measured-delivery string, e.g. `"energy=2.3,tension=1.7,valence=2.6,whisper=off"`; axes `energy`/`tension`/`valence`/`assertiveness` are 0–4 (2 = neutral), `whisper` is `on`/`off` |
+| `SCYLLASBAND_DELIVERY` | *(empty = neutral)* | **v2 only.** Default measured-delivery string, e.g. `"energy=2.3,tension=1.7,valence=2.6,whisper=off"`; axes `energy`/`tension`/`valence`/`assertiveness` are 0–4 (2 = neutral), `whisper` is `on`/`off` |
+| `SCYLLASBAND_V1_EMOTION` | *(empty = neutral)* | **v1 only.** Emotion spec, either continuous axes `"joy=0.75,sarcasm=0.25"` (axes: `calm, joy, anger, sadness, sarcasm, questioning`, values 0–1) or a named preset (`neutral, friendly, happy, excited, angry, frustrated, sad, sarcastic, unsure`) |
+| `SCYLLASBAND_V1_EMOTION_SCALE` | `1.0` | **v1 only.** Emotion CFG strength: `1` = direct, `0` = null |
 | `SCYLLASBAND_OUTPUT_CHUNK_MS` | `200` | Max milliseconds of audio per `audio-chunk` event |
 | `SCYLLASBAND_WARMUP` | `true` | Run a warmup synthesis at startup so the first request is fast |
 | `SCYLLASBAND_LOG_LEVEL` | `INFO` | Log level |

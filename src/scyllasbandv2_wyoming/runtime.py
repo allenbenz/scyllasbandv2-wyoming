@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 from scyllasband.delivery import resolve_delivery
 from scyllasband.download import download_litert_bundle
-from scyllasband.runtime import ScyllasBandRuntime
+from scyllasband.runtime import ScyllasBandRuntime, SynthesisRequest
 
 from .audio import match_model_language
 from .config import Settings
@@ -24,6 +24,9 @@ from .config import Settings
 _LOGGER = logging.getLogger(__name__)
 
 _SENTINEL = object()
+
+# v1's largest latent bucket is 512 frames * 512-sample hop at 24 kHz.
+V1_LARGEST_BUCKET_SECONDS = 10.9
 
 
 class SynthesisServiceError(RuntimeError):
@@ -106,12 +109,13 @@ def resolve_onnx_providers(device: str) -> list[str]:
 
 def bundle_path(settings: Settings) -> Path:
     """Local bundle directory for the configured model dir and variant."""
-    return (Path(settings.model_dir) / "v2" / settings.bundle).resolve()
+    return (Path(settings.model_dir) / settings.model_version / settings.bundle).resolve()
 
 
 def _download_bundle_sync(settings: Settings, *, force: bool) -> Path:
     return download_litert_bundle(
         models_dir=Path(settings.model_dir),
+        model_version=settings.model_version,
         bundle_subdir=settings.bundle,
         revision=settings.revision,
         force=force,
@@ -245,12 +249,19 @@ class SynthesisService:
         }
         if settings.seed is not None:
             overrides["seed"] = settings.seed
+        if settings.model_version == "v1":
+            # v1 conditions on continuous affect axes + CFG scale; the v2
+            # contract rejects both. The spec grammar is "axis=value" (0-1) or a
+            # named preset; the runtime raises ValueError listing valid axes.
+            overrides["affect"] = settings.v1_emotion
+            overrides["affect_guidance_scale"] = settings.v1_emotion_scale
+        else:
+            overrides["delivery"] = settings.delivery
 
         iterator = self._runtime.synthesize_stream(
             text=text,
             voice_id=voice_id,
             language=language,
-            delivery=settings.delivery,
             **overrides,
         )
         loop = asyncio.get_running_loop()
@@ -287,6 +298,17 @@ class SynthesisService:
                 raise SynthesisServiceError(
                     f"invalid SCYLLASBAND_DELIVERY {settings.delivery!r}: {exc}"
                 ) from exc
+        v1_chunk_cap = (
+            settings.model_version == "v1"
+            and settings.max_chunk_seconds > V1_LARGEST_BUCKET_SECONDS
+        )
+        if v1_chunk_cap:
+            _LOGGER.warning(
+                "max_chunk_seconds=%.1f exceeds v1's largest latent bucket "
+                "(~%.1fs); overlong chunks will be preflight-split",
+                settings.max_chunk_seconds,
+                V1_LARGEST_BUCKET_SECONDS,
+            )
 
         bundle_dir = bundle_path(settings)
         have_bundle = (bundle_dir / "manifest.json").is_file()
@@ -298,7 +320,8 @@ class SynthesisService:
                 else " (one-time, ~500 MB)"
             )
             _LOGGER.info(
-                "Downloading Scylla's Band v2 %s bundle to %s%s",
+                "Downloading Scylla's Band %s %s bundle to %s%s",
+                settings.model_version,
                 settings.bundle,
                 settings.model_dir,
                 reason,
@@ -313,7 +336,9 @@ class SynthesisService:
 
         providers = resolve_onnx_providers(settings.device)
         _LOGGER.info(
-            "Loading Scylla's Band v2 bundle from %s (device=%s, providers=%s)",
+            "Loading Scylla's Band %s %s bundle from %s (device=%s, providers=%s)",
+            settings.model_version,
+            settings.bundle,
             bundle_dir,
             settings.device,
             providers,
@@ -338,6 +363,10 @@ class SynthesisService:
             _LOGGER.info("Warming up the runtime (discarded one-step render)")
             try:
                 await asyncio.to_thread(runtime.warmup)
+            except ValueError as exc:
+                # a request-configuration error, not a provider problem —
+                # fail fast without the CUDA fallback.
+                raise SynthesisServiceError(f"warmup rejected the configuration: {exc}") from exc
             except Exception as exc:
                 if settings.device == "auto" and providers[0] == "CUDAExecutionProvider":
                     # The CUDA EP can fail at first run (e.g. cuDNN missing on
@@ -361,6 +390,28 @@ class SynthesisService:
 
         service = cls(runtime, settings, providers=providers, bundle_dir=bundle_dir)
         service.default_voice()  # fail fast on an unknown SCYLLASBAND_VOICE
+
+        if settings.model_version == "v1" and settings.v1_emotion:
+            # warmup's emotion kwarg only covers legacy categorical presets;
+            # validate the continuous affect spec with a discarded one-step
+            # render so an invalid SCYLLASBAND_V1_EMOTION fails at startup.
+            probe = SynthesisRequest(
+                text="Probe.",
+                voice_id=service.default_voice().id,
+                language=service.resolve_language(service.default_voice(), None),
+                affect=settings.v1_emotion,
+                affect_guidance_scale=settings.v1_emotion_scale,
+                normalize_text=True,
+                seed=0,
+                steps=1,
+                sampler="euler",
+            )
+            try:
+                await asyncio.to_thread(runtime.synthesize, probe)
+            except ValueError as exc:
+                raise SynthesisServiceError(
+                    f"invalid SCYLLASBAND_V1_EMOTION {settings.v1_emotion!r}: {exc}"
+                ) from exc
 
         _LOGGER.info(
             "Model ready: %d voices, languages: %s (providers: %s)",

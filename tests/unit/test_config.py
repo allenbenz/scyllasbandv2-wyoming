@@ -16,6 +16,7 @@ from scyllasbandv2_wyoming.config import (
 def test_defaults() -> None:
     settings = Settings()
     assert settings.uri == "tcp://0.0.0.0:10200"
+    assert settings.model_version == "v2"
     assert settings.bundle == "onnx"
     assert settings.download == "auto"
     assert settings.device == "auto"
@@ -67,9 +68,62 @@ def test_env_roundtrip() -> None:
     assert settings.max_chunk_seconds == 16
     assert settings.energy_gain == 0.5
     assert settings.delivery == "energy=2.3,whisper=off"
+    assert settings.v1_emotion is None
+    assert settings.v1_emotion_scale == 1.0
     assert settings.output_chunk_ms == 100
     assert settings.warmup is False
     assert settings.log_level == "DEBUG"
+
+
+def test_env_v1_roundtrip() -> None:
+    env = {
+        f"{ENV_PREFIX}MODEL_VERSION": "v1",
+        f"{ENV_PREFIX}V1_EMOTION": "joy=0.7,sarcasm=0.3",
+        f"{ENV_PREFIX}V1_EMOTION_SCALE": "1.5",
+    }
+    settings = settings_from_env(env)
+    assert settings.model_version == "v1"
+    assert settings.v1_emotion == "joy=0.7,sarcasm=0.3"
+    assert settings.v1_emotion_scale == 1.5
+    assert settings.delivery is None
+
+
+def test_env_rejects_delivery_with_v1() -> None:
+    env = {
+        f"{ENV_PREFIX}MODEL_VERSION": "v1",
+        f"{ENV_PREFIX}DELIVERY": "energy=2.3",
+    }
+    with pytest.raises(ValueError, match="delivery requires model_version=v2"):
+        settings_from_env(env)
+
+
+def test_env_rejects_v1_emotion_with_v2() -> None:
+    env = {
+        f"{ENV_PREFIX}MODEL_VERSION": "v2",
+        f"{ENV_PREFIX}V1_EMOTION": "joy=0.7",
+    }
+    with pytest.raises(ValueError, match="v1_emotion requires model_version=v1"):
+        settings_from_env(env)
+
+
+def test_v1_v2_cross_validation() -> None:
+    # delivery is v2-only
+    with pytest.raises(ValueError, match="delivery requires model_version=v2"):
+        Settings(model_version="v1", delivery="energy=2.3")
+    # v1 emotion knobs are v1-only
+    with pytest.raises(ValueError, match="v1_emotion requires model_version=v1"):
+        Settings(model_version="v2", v1_emotion="joy=0.7")
+    with pytest.raises(ValueError, match="v1_emotion_scale requires model_version=v1"):
+        Settings(model_version="v2", v1_emotion_scale=1.5)
+    # v1 accepts its own knobs together
+    Settings(model_version="v1", v1_emotion="joy=0.7", v1_emotion_scale=1.5)
+    # v2 accepts its own
+    Settings(model_version="v2", delivery="energy=2.3")
+
+
+def test_v1_emotion_scale_negative_rejected() -> None:
+    with pytest.raises(ValueError, match="v1_emotion_scale"):
+        Settings(model_version="v1", v1_emotion_scale=-0.5)
 
 
 def test_env_bad_int() -> None:
@@ -90,6 +144,7 @@ def test_env_max_chunk_seconds_zero_is_allowed() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        ("model_version", "v3"),
         ("bundle", "onnx-fp16"),
         ("download", "sometimes"),
         ("device", "tpu"),
@@ -130,6 +185,12 @@ def test_cli_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = settings_from_args(args)
     assert settings.steps == 4
     assert settings.device == "cuda"
+
+
+def test_cli_model_version_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(f"{ENV_PREFIX}MODEL_VERSION", "v1")
+    args = build_arg_parser().parse_args([])
+    assert settings_from_args(args).model_version == "v1"
 
 
 def test_cli_no_warmup_flag(monkeypatch: pytest.MonkeyPatch) -> None:

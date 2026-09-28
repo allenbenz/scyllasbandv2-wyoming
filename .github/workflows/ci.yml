@@ -3,44 +3,56 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - ".gitignore"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
   workflow_dispatch:
   schedule:
     # Weekly model e2e: Monday 05:00 UTC
     - cron: "0 5 * * 1"
+
+# Cancel superseded runs on the same branch/PR instead of queueing them.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   lint:
+    # ruff + mypy share one environment; splitting them just duplicated the
+    # checkout + python + uv sync setup on every run.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.14"
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.14"
-      - run: uv run mypy src
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen ruff format --check .
+      - run: uv run --frozen mypy src
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
       - name: Run unit and integration tests
-        run: uv run pytest -m "not e2e and not docker" -v
+        run: uv run --frozen pytest -m "not e2e and not docker" -v
 
   e2e:
     # Real model on CPU; downloads ~500 MB (cached between runs).
@@ -55,6 +67,8 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
       - uses: actions/cache@v4
         with:
           path: data/models
@@ -63,4 +77,4 @@ jobs:
         env:
           SCYLLASBAND_E2E: "1"
           SCYLLASBAND_DEVICE: cpu
-        run: uv run pytest -m e2e -v
+        run: uv run --frozen pytest -m e2e -v

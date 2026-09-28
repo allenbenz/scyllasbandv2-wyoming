@@ -19,10 +19,17 @@ _LOGGER = logging.getLogger(__name__)
 
 PROGRAM_NAME = "scyllasbandv2-wyoming"
 PROGRAM_URL = "https://github.com/allenbenz/scyllasbandv2-wyoming"
-MODEL_ATTRIBUTION = Attribution(
-    name="Scylla's Band v2",
-    url="https://huggingface.co/spybyscript/scyllasbandv2",
-)
+MODEL_REPOSITORIES = {
+    "v1": "https://huggingface.co/spybyscript/scyllasband",
+    "v2": "https://huggingface.co/spybyscript/scyllasbandv2",
+}
+
+
+def model_attribution(model_version: str) -> Attribution:
+    return Attribution(
+        name=f"Scylla's Band {model_version}",
+        url=MODEL_REPOSITORIES.get(model_version, MODEL_REPOSITORIES["v2"]),
+    )
 
 
 def program_version() -> str:
@@ -35,10 +42,11 @@ def program_version() -> str:
 def build_info(service: SynthesisService) -> Info:
     """Describe the service for Home Assistant's Wyoming integration."""
     using_cuda = any("CUDA" in provider for provider in service.providers)
+    attribution = model_attribution(service.settings.model_version)
     voices = [
         TtsVoice(
             name=str(voice.id),
-            attribution=MODEL_ATTRIBUTION,
+            attribution=attribution,
             installed=True,
             description=str(voice.name),
             version=None,
@@ -51,7 +59,8 @@ def build_info(service: SynthesisService) -> Info:
         attribution=Attribution(name="scyllasbandv2-wyoming", url=PROGRAM_URL),
         installed=True,
         description=(
-            f"Scylla's Band v2 text to speech (onnxruntime, {'CUDA' if using_cuda else 'CPU'})"
+            f"Scylla's Band {service.settings.model_version} text to speech "
+            f"(onnxruntime, {'CUDA' if using_cuda else 'CPU'})"
         ),
         version=program_version(),
         voices=voices,
