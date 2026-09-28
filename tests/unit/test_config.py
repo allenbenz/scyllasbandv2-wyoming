@@ -44,6 +44,7 @@ def test_env_roundtrip() -> None:
         f"{ENV_PREFIX}STEPS": "12",
         f"{ENV_PREFIX}SEED": "7",
         f"{ENV_PREFIX}SPEED": "1.2",
+        f"{ENV_PREFIX}MAX_CHUNK_SECONDS": "16",
         f"{ENV_PREFIX}ENERGY_GAIN": "0.5",
         f"{ENV_PREFIX}DELIVERY": "energy=2.3,whisper=off",
         f"{ENV_PREFIX}OUTPUT_CHUNK_MS": "100",
@@ -63,6 +64,7 @@ def test_env_roundtrip() -> None:
     assert settings.steps == 12
     assert settings.seed == 7
     assert settings.speed == 1.2
+    assert settings.max_chunk_seconds == 16
     assert settings.energy_gain == 0.5
     assert settings.delivery == "energy=2.3,whisper=off"
     assert settings.output_chunk_ms == 100
@@ -80,8 +82,13 @@ def test_env_bad_bool() -> None:
         settings_from_env({f"{ENV_PREFIX}WARMUP": "maybe"})
 
 
+def test_env_max_chunk_seconds_zero_is_allowed() -> None:
+    settings = settings_from_env({f"{ENV_PREFIX}MAX_CHUNK_SECONDS": "0"})
+    assert settings.max_chunk_seconds == 0  # 0 = cap disabled
+
+
 @pytest.mark.parametrize(
-    "field,value",
+    ("field", "value"),
     [
         ("bundle", "onnx-fp16"),
         ("download", "sometimes"),
@@ -90,6 +97,8 @@ def test_env_bad_bool() -> None:
         ("steps", 0),
         ("steps", 65),
         ("speed", 0.0),
+        ("max_chunk_seconds", -1.0),
+        ("max_chunk_seconds", 61.0),
         ("energy_gain", -1.0),
         ("output_chunk_ms", 1),
         ("intra_op_threads", -2),

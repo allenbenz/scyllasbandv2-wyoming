@@ -215,6 +215,7 @@ async def test_settings_passthrough_to_runtime(fake_runtime: FakeRuntime, tmp_pa
         sampler="euler",
         seed=11,
         speed=1.5,
+        max_chunk_seconds=9.5,
         delivery="whisper=on",
     )
     service = SynthesisService(
@@ -236,6 +237,7 @@ async def test_settings_passthrough_to_runtime(fake_runtime: FakeRuntime, tmp_pa
     assert request["sampler"] == "euler"
     assert request["seed"] == 11
     assert request["speed"] == 1.5
+    assert request["max_chunk_seconds"] == 9.5
     assert request["delivery"] == "whisper=on"
 
 

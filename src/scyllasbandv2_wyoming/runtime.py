@@ -109,11 +109,12 @@ def bundle_path(settings: Settings) -> Path:
     return (Path(settings.model_dir) / "v2" / settings.bundle).resolve()
 
 
-def _download_bundle_sync(settings: Settings) -> Path:
+def _download_bundle_sync(settings: Settings, *, force: bool) -> Path:
     return download_litert_bundle(
         models_dir=Path(settings.model_dir),
         bundle_subdir=settings.bundle,
         revision=settings.revision,
+        force=force,
     )
 
 
@@ -240,6 +241,7 @@ class SynthesisService:
             "steps": settings.steps,
             "sampler": settings.sampler,
             "speed": settings.speed,
+            "max_chunk_seconds": settings.max_chunk_seconds,
         }
         if settings.seed is not None:
             overrides["seed"] = settings.seed
@@ -288,13 +290,20 @@ class SynthesisService:
 
         bundle_dir = bundle_path(settings)
         have_bundle = (bundle_dir / "manifest.json").is_file()
-        if settings.download == "always" or (not have_bundle and settings.download == "auto"):
+        force_download = settings.download == "always"
+        if force_download or (not have_bundle and settings.download == "auto"):
+            reason = (
+                " (forced re-download)"
+                if force_download and have_bundle
+                else " (one-time, ~500 MB)"
+            )
             _LOGGER.info(
-                "Downloading Scylla's Band v2 %s bundle to %s (one-time, ~500 MB)",
+                "Downloading Scylla's Band v2 %s bundle to %s%s",
                 settings.bundle,
                 settings.model_dir,
+                reason,
             )
-            await asyncio.to_thread(_download_bundle_sync, settings)
+            await asyncio.to_thread(_download_bundle_sync, settings, force=force_download)
         elif not have_bundle:
             raise SynthesisServiceError(
                 f"Model bundle not found at {bundle_dir} and downloading is disabled "
@@ -309,7 +318,21 @@ class SynthesisService:
             settings.device,
             providers,
         )
-        runtime = await asyncio.to_thread(_load_runtime_sync, bundle_dir, providers, settings)
+        try:
+            runtime = await asyncio.to_thread(_load_runtime_sync, bundle_dir, providers, settings)
+        except Exception:
+            if not (settings.download == "auto" and have_bundle and not force_download):
+                raise
+            # The bundle looked present but fails to load (e.g. copied
+            # incompletely or corrupted on disk). Self-heal once via a forced
+            # re-download while in auto mode.
+            _LOGGER.warning(
+                "Bundle at %s failed to load; re-downloading once",
+                bundle_dir,
+                exc_info=True,
+            )
+            await asyncio.to_thread(_download_bundle_sync, settings, force=True)
+            runtime = await asyncio.to_thread(_load_runtime_sync, bundle_dir, providers, settings)
 
         if settings.warmup:
             _LOGGER.info("Warming up the runtime (discarded one-step render)")

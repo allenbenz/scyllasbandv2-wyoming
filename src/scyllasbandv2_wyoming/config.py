@@ -25,6 +25,7 @@ VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
 MAX_STEPS = 64
 MIN_OUTPUT_CHUNK_MS = 20
+MAX_CHUNK_SECONDS_LIMIT = 60.0  # planner splits anyway near the ~21 s graph ceiling
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class Settings:
     steps: int = 8
     seed: int | None = None
     speed: float = 1.0
+    max_chunk_seconds: float = 12.0
     energy_gain: float = 1.0
     delivery: str | None = None
     output_chunk_ms: int = 200
@@ -68,6 +70,11 @@ class Settings:
             raise ValueError(f"steps must be between 1 and {MAX_STEPS}, got {self.steps}")
         if self.speed <= 0:
             raise ValueError(f"speed must be > 0, got {self.speed}")
+        if not 0 <= self.max_chunk_seconds <= MAX_CHUNK_SECONDS_LIMIT:
+            raise ValueError(
+                f"max_chunk_seconds must be between 0 (disabled) and "
+                f"{MAX_CHUNK_SECONDS_LIMIT}, got {self.max_chunk_seconds}"
+            )
         if self.energy_gain < 0:
             raise ValueError(f"energy_gain must be >= 0, got {self.energy_gain}")
         if self.output_chunk_ms < MIN_OUTPUT_CHUNK_MS:
@@ -151,6 +158,8 @@ def settings_from_env(env: Mapping[str, str] | None = None) -> Settings:
     kwargs["seed"] = _env_int(source, "SEED")
     if (factor := _env_float(source, "SPEED")) is not None:
         kwargs["speed"] = factor
+    if (factor := _env_float(source, "MAX_CHUNK_SECONDS")) is not None:
+        kwargs["max_chunk_seconds"] = factor
     if (factor := _env_float(source, "ENERGY_GAIN")) is not None:
         kwargs["energy_gain"] = factor
     kwargs["delivery"] = _raw(source, "DELIVERY")
@@ -265,6 +274,17 @@ def build_arg_parser(env: Mapping[str, str] | None = None) -> argparse.ArgumentP
         default=base.speed,
         metavar="X",
         help="speaking-rate scale from the model (env SCYLLASBAND_SPEED)",
+    )
+    parser.add_argument(
+        "--max-chunk-seconds",
+        type=float,
+        default=base.max_chunk_seconds,
+        metavar="SEC",
+        help=(
+            "max predicted seconds per planner chunk; fewer/longer chunks give "
+            "steadier intonation across sentences at higher first-audio latency, "
+            "0 disables the seconds cap (env SCYLLASBAND_MAX_CHUNK_SECONDS)"
+        ),
     )
     parser.add_argument(
         "--energy-gain",

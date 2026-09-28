@@ -52,7 +52,7 @@ Voice and language are chosen **per request** from Home Assistant — they are n
 
 ## Configuration
 
-Every setting is available as an environment variable and as a CLI flag of the same meaning (`--uri`, `--model-dir`, `--bundle`, `--download`, `--revision`, `--device`, `--intra-op-threads`, `--inter-op-threads`, `--voice`, `--language`, `--sampler`, `--steps`, `--seed`, `--speed`, `--energy-gain`, `--delivery`, `--output-chunk-ms`, `--no-warmup`, `--log-level`). CLI flags override environment variables.
+Every setting is available as an environment variable and as a CLI flag of the same meaning (`--uri`, `--model-dir`, `--bundle`, `--download`, `--revision`, `--device`, `--intra-op-threads`, `--inter-op-threads`, `--voice`, `--language`, `--sampler`, `--steps`, `--seed`, `--speed`, `--max-chunk-seconds`, `--energy-gain`, `--delivery`, `--output-chunk-ms`, `--no-warmup`, `--log-level`). CLI flags override environment variables.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -71,6 +71,7 @@ Every setting is available as an environment variable and as a CLI flag of the s
 | `SCYLLASBAND_STEPS` | `8` | Rectified-flow steps (quality/latency tradeoff, 1–64) |
 | `SCYLLASBAND_SEED` | *(empty = random per request)* | Deterministic seeding |
 | `SCYLLASBAND_SPEED` | `1.0` | Speaking-rate scale from the model |
+| `SCYLLASBAND_MAX_CHUNK_SECONDS` | `12` | Max predicted seconds of audio per planner chunk. Fewer/longer chunks = fewer seams = steadier intonation across sentences, at the cost of first-audio latency; `0` disables the seconds cap (the character limit still applies). The model's graph ceiling is ~21 s; overlong chunks are split automatically. |
 | `SCYLLASBAND_ENERGY_GAIN` | `1.0` | Post-synthesis waveform gain (linear; the delivery `energy` axis is separate and learned) |
 | `SCYLLASBAND_DELIVERY` | *(empty = neutral)* | Default measured-delivery string, e.g. `"energy=2.3,tension=1.7,valence=2.6,whisper=off"`; axes `energy`/`tension`/`valence`/`assertiveness` are 0–4 (2 = neutral), `whisper` is `on`/`off` |
 | `SCYLLASBAND_OUTPUT_CHUNK_MS` | `200` | Max milliseconds of audio per `audio-chunk` event |

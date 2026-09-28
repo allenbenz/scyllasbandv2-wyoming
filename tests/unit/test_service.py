@@ -120,7 +120,14 @@ async def test_stream_yields_audio_pieces(fake_service: SynthesisService) -> Non
 
 
 async def test_stream_passes_synthesis_settings(fake_runtime) -> None:
-    settings = Settings(steps=4, sampler="euler", seed=7, speed=1.25, delivery="energy=2.5")
+    settings = Settings(
+        steps=4,
+        sampler="euler",
+        seed=7,
+        speed=1.25,
+        max_chunk_seconds=16.0,
+        delivery="energy=2.5",
+    )
     service = SynthesisService(
         fake_runtime, settings, providers=["CPUExecutionProvider"], bundle_dir="."
     )
@@ -131,7 +138,17 @@ async def test_stream_passes_synthesis_settings(fake_runtime) -> None:
     assert request["sampler"] == "euler"
     assert request["seed"] == 7
     assert request["speed"] == 1.25
+    assert request["max_chunk_seconds"] == 16.0
     assert request["delivery"] == "energy=2.5"
+
+
+async def test_stream_passes_default_max_chunk_seconds(fake_runtime) -> None:
+    service = SynthesisService(
+        fake_runtime, Settings(), providers=["CPUExecutionProvider"], bundle_dir="."
+    )
+    async for _ in service.stream(text="Hi", voice_id="ariadne", language="en_us"):
+        pass
+    assert fake_runtime.requests[-1]["max_chunk_seconds"] == 12.0
 
 
 def test_build_info(fake_service: SynthesisService) -> None:
